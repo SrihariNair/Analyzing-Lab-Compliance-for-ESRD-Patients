@@ -1,0 +1,154 @@
+WITH active_pats AS
+(
+    SELECT DISTINCT patient
+    FROM encounters
+    WHERE start BETWEEN '2021-01-01 00:00' AND '2022-12-31 23:59'
+),
+
+transplants AS
+(
+    SELECT *
+    FROM procedures
+    WHERE code = '55.69'
+),
+
+esrd AS
+(
+    SELECT  cond.start AS condition_start,
+            cond.stop AS condition_stop,
+            least(trp.start, cond.stop, pat.deathdate, '2099-01-01') AS esrd_end_date,
+            cond.patient,
+            trp.start AS kidney_transplant_date,
+            pat.first,
+            pat.last,
+            pat.birthdate,
+            pat.deathdate,
+            pat.race,
+            pat.state,
+            pat.county,
+            pat.city,
+            floor(extract(epoch FROM age('12-31-2022 23:59', pat.birthdate)) / 31536000) AS age
+    FROM conditions AS cond
+    JOIN patients AS pat
+      ON cond.patient = pat.id
+    JOIN active_pats AS act
+      ON cond.patient = act.patient
+    LEFT JOIN transplants AS trp
+      ON cond.patient = trp.patient
+    WHERE cond.code = '585.6'
+      AND (cond.stop BETWEEN '2022-01-01 00:00' AND '2022-12-31 23:59'
+          OR cond.start BETWEEN '2022-01-01 00:00' AND '2022-12-31 23:59'
+          OR (cond.start < '2022-01-01 00:00' AND cond.stop IS NULL)
+          OR (cond.start < '2022-01-01 00:00' AND cond.stop > '2022-12-31 23:59')
+          )
+      AND (pat.deathdate IS NULL OR pat.deathdate > '2022-01-01')
+      AND (trp.start IS NULL OR trp.start > '2022-01-01')
+),
+
+obs_dates AS
+(
+    SELECT cast('2022-01-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-02-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-03-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-04-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-05-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-06-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-07-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-08-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-09-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-10-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-11-01' AS date) AS obs_date
+    UNION
+    SELECT cast('2022-12-01' AS date) AS obs_date
+),
+
+prep AS
+(
+    SELECT  obs.obs_date,
+            esrd.condition_start,
+            esrd.condition_stop,
+            esrd.patient,
+            esrd.kidney_transplant_date,
+            esrd.first,
+            esrd.last,
+            esrd.birthdate,
+            esrd.deathdate,
+            esrd.race,
+            esrd.state,
+            esrd.county,
+            esrd.city,
+            esrd.age
+    FROM obs_dates AS obs
+    JOIN esrd
+      ON obs.obs_date BETWEEN esrd.condition_start AND esrd.esrd_end_date
+),
+
+labs AS
+(
+    SELECT patient,
+           date AS lab_date,
+           date_trunc('month', date) AS month,
+           code,
+           description,
+           value,
+           row_number() OVER (PARTITION BY patient, code, date_trunc('month', date) ORDER BY date ASC) AS nth_lab
+    FROM observations
+    WHERE code IN ('49765-1', '2947-0', '1751-7', '6299-2')
+      AND date BETWEEN '2022-01-01 00:00' AND '2022-12-31 23:59'
+),
+
+final AS
+(    
+    SELECT DISTINCT
+            prep.obs_date,
+         -- prep.condition_start,
+         -- prep.condition_stop,
+            prep.patient,
+            prep.kidney_transplant_date,
+            prep.first,
+            prep.last,
+            prep.birthdate,
+            prep.deathdate,
+            prep.race,
+            prep.state,
+            prep.county,
+            prep.city,
+            prep.age,
+            ca.value AS calcium_value,
+            na.value AS sodium_value,
+            alb.value AS albumin_value,
+            bun.value AS bun_value
+    FROM prep
+    LEFT JOIN labs AS ca
+      ON prep.patient = ca.patient
+     AND prep.obs_date = ca.month
+     AND ca.nth_lab = 1
+     AND ca.code = '49765-1' -- calcium
+    LEFT JOIN labs AS na
+      ON prep.patient = na.patient
+     AND prep.obs_date = na.month
+     AND na.nth_lab = 1
+     AND na.code = '2947-0' -- sodium
+    LEFT JOIN labs AS alb
+      ON prep.patient = alb.patient
+     AND prep.obs_date = alb.month
+     AND alb.nth_lab = 1
+     AND alb.code = '1751-7' -- albumin
+    LEFT JOIN labs AS bun
+      ON prep.patient = bun.patient
+     AND prep.obs_date = bun.month
+     AND bun.nth_lab = 1
+     AND bun.code = '6299-2' -- bun
+)
+
+SELECT * FROM final;
